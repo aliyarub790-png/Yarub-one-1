@@ -21,8 +21,21 @@ jobs:
           mkdir source
           unzip -q yarub-one.zip -d source
 
-          find source -type f -name settings.gradle.kts -print
-          find source -type f -name build.gradle.kts -print
+          echo "=== Project files ==="
+          find source -maxdepth 4 -type f | head -200
+
+      - name: Find Android project
+        id: android
+        run: |
+          ANDROID_DIR=$(find source -type f -name settings.gradle.kts -printf '%h\n' | head -n 1)
+
+          if [ -z "$ANDROID_DIR" ]; then
+            echo "ERROR: Android project not found."
+            exit 1
+          fi
+
+          echo "Android project: $ANDROID_DIR"
+          echo "dir=$ANDROID_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -33,9 +46,11 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
           yes | sdkmanager --licenses >/dev/null || true
 
       - name: Set up Gradle
@@ -43,24 +58,39 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Find Android project
-        id: android
+      - name: Check Gradle project
+        working-directory: ${{ steps.android.outputs.dir }}
         run: |
-          ANDROID_DIR=$(find source -type f -name settings.gradle.kts -printf '%h\n' | head -n 1)
+          echo "=== Gradle files ==="
+          ls -la
+          echo "=== Java/Kotlin files ==="
+          find app/src -type f \( -name "*.kt" -o -name "*.java" \) | sort
 
-          if [ -z "$ANDROID_DIR" ]; then
-            echo "Android project not found."
-            exit 1
-          fi
+      - name: Build Debug APK with full compiler diagnostics
+        working-directory: ${{ steps.android.outputs.dir }}
+        run: |
+          set -o pipefail
+          gradle --no-daemon \
+            :app:compileDebugKotlin \
+            --stacktrace \
+            --info \
+            2>&1 | tee "$GITHUB_WORKSPACE/kotlin-build.log"
 
-          echo "dir=$ANDROID_DIR" >> "$GITHUB_OUTPUT"
-
-      - name: Build Debug APK
+      - name: Build APK
         working-directory: ${{ steps.android.outputs.dir }}
         run: |
           gradle --no-daemon assembleDebug
 
+      - name: Upload compiler log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yarub-one-build-log
+          path: kotlin-build.log
+          if-no-files-found: ignore
+
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: yarub-one-debug-apk
