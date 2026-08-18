@@ -1,129 +1,49 @@
-package one.yarub.app.data
+name: Build YARUB ONE APK
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import one.yarub.app.ApiConfig
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.net.HttpURLConnection
-import java.net.URL
+on:
+  workflow_dispatch:
 
-class YarubApi(private val session: SessionStore) {
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-    data class Result<T>(
-        val value: T?,
-        val errorCode: String?,
-        val message: String?
-    ) {
-        val isSuccess: Boolean
-            get() = value != null
-    }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    suspend fun login(
-        email: String,
-        password: String
-    ): Result<Unit> {
-        return postJson(
-            "/api/auth/login",
-            JSONObject()
-                .put("email", email)
-                .put("password", password)
-        ).map { Unit }
-    }
+      - name: Check ZIP
+        run: |
+          test -f yarub-one.zip
+          unzip -l yarub-one.zip | head -50
 
-    suspend fun register(
-        email: String,
-        password: String,
-        locale: String
-    ): Result<Unit> {
-        return postJson(
-            "/api/auth/register",
-            JSONObject()
-                .put("email", email)
-                .put("password", password)
-                .put("locale", locale)
-        ).map { Unit }
-    }
+      - name: Extract project
+        run: |
+          mkdir -p source
+          unzip -q yarub-one.zip -d source
+          find source -name settings.gradle.kts -print
 
-    suspend fun logout(): Result<Unit> {
-        val result = postJson(
-            "/api/auth/logout",
-            JSONObject()
-        ).map { Unit }
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-        session.clear()
-        return result
-    }
+      - name: Setup Android
+        uses: android-actions/setup-android@v3
 
-    suspend fun projects(): Result<List<Project>> {
-        return getJson("/api/projects").map { body ->
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
-            val array =
-                body.optJSONArray("projects")
-                    ?: JSONArray()
+      - name: Build APK
+        run: |
+          ANDROID_DIR=$(find source -name settings.gradle.kts -printf '%h\n' | head -1)
+          cd "$ANDROID_DIR"
+          gradle assembleDebug --stacktrace
 
-            (0 until array.length()).map { index ->
-
-                val row =
-                    array.getJSONObject(index)
-
-                Project(
-                    id = row.getString("id"),
-                    title = row.getString("title"),
-                    domain = row.optString("domain"),
-                    language = row.optString(
-                        "language",
-                        "ar"
-                    )
-                )
-            }
-        }
-    }
-
-    suspend fun entitlements(): Result<Entitlements> {
-        return getJson("/api/entitlements").map { body ->
-
-            val allowance =
-                body.optJSONArray("allowance")
-                    ?: JSONArray()
-
-            Entitlements(
-                planCode =
-                    body.optString(
-                        "planCode",
-                        "free"
-                    ),
-
-                allowance =
-                    (0 until allowance.length()).map { index ->
-
-                        val row =
-                            allowance.getJSONObject(index)
-
-                        Allowance(
-                            action =
-                                row.getString("action"),
-
-                            used =
-                                row.getInt("used"),
-
-                            limit =
-                                row.getInt("limit"),
-
-                            remaining =
-                                row.getInt("remaining")
-                        )
-                    }
-            )
-        }
-    }
-
-    suspend fun capabilities(): Result<Map<String, String>> {
-        return getJson("/api/capabilities").map { body ->
-
-            val array =
-                body.optJSONArray("capabilities")
-                    ?: JSONArray()
-
-            (0 until array.length()).associate {
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: yarub-one-debug-apk
+          path: '**/app/build/outputs/apk/debug/*.apk'
