@@ -1,112 +1,81 @@
-name: Build YARUB ONE APK
+name: YARUB ONE APK
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  android:
+    name: Build YARUB ONE Debug APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract YARUB ONE
+      - name: Find Android project
+        id: project
         shell: bash
         run: |
           set -e
 
-          test -f yarub-one.zip
+          DIR=""
 
-          rm -rf source
-          mkdir -p source
+          if [ -f "android/gradlew" ]; then
+            DIR="android"
+          elif [ -f "yarub-one/android/gradlew" ]; then
+            DIR="yarub-one/android"
+          elif [ -f "source/yarub-one/android/gradlew" ]; then
+            DIR="source/yarub-one/android"
+          fi
 
-          unzip -q yarub-one.zip -d source
+          if [ -z "$DIR" ]; then
+            echo "Gradle wrapper was not found."
+            echo "Searching for Android projects:"
+            find . -type f \( -name "gradlew" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
+            exit 1
+          fi
 
-          test -f source/yarub-one/android/settings.gradle.kts
-          test -f source/yarub-one/android/app/build.gradle.kts
-          test -f source/yarub-one/android/app/src/main/java/one/yarub/app/data/YarubApi.kt
+          echo "Android project: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Fix YarubApi Result type
-        shell: bash
-        run: |
-          set -e
-
-          FILE="source/yarub-one/android/app/src/main/java/one/yarub/app/data/YarubApi.kt"
-
-          python3 - "$FILE" <<'PY'
-          from pathlib import Path
-          import sys
-
-          path = Path(sys.argv[1])
-          text = path.read_text()
-
-          old = """private fun errorFrom(connection: HttpURLConnection): Result<Nothing> = try {"""
-
-          new = """private fun <T> errorFrom(connection: HttpURLConnection): Result<T> = try {"""
-
-          if old not in text:
-              raise SystemExit("Expected errorFrom declaration was not found.")
-
-          text = text.replace(old, new, 1)
-
-          text = text.replace(
-              "if (code >= 400) return@withContext errorFrom(connection)",
-              "if (code >= 400) return@withContext errorFrom<ChatOutcome>(connection)",
-              1
-          )
-
-          text = text.replace(
-              "if (connection.responseCode >= 400) return@withContext errorFrom(connection)",
-              "if (connection.responseCode >= 400) return@withContext errorFrom<JSONObject>(connection)",
-              1
-          )
-
-          text = text.replace(
-              "if (connection.responseCode >= 400) return@withContext errorFrom(connection)",
-              "if (connection.responseCode >= 400) return@withContext errorFrom<JSONObject>(connection)",
-              1
-          )
-
-          path.write_text(text)
-          print("YarubApi.kt fixed successfully.")
-          PY
+      - name: Make Gradle executable
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: chmod +x gradlew
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK
-        shell: bash
         run: |
           sdkmanager "platform-tools"
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
-
           yes | sdkmanager --licenses >/dev/null || true
 
-      - name: Setup Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
-
       - name: Build Debug APK
-        working-directory: source/yarub-one/android
-        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          gradle --no-daemon \
-            --stacktrace \
-            assembleDebug \
-            -PYARUB_API_BASE_URL_DEBUG="http://10.0.2.2:3000"
+          ./gradlew clean assembleDebug --stacktrace
+
+      - name: Locate APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          find app/build/outputs/apk/debug \
+            -type f \
+            -name "*.apk" \
+            -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: YARUB-ONE-debug-APK
-          path: source/yarub-one/android/app/build/outputs/apk/debug/*.apk
+          path: |
+            **/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
