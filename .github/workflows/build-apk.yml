@@ -1,58 +1,129 @@
-name: Build YARUB ONE APK
+package one.yarub.app.data
 
-on:
-  workflow_dispatch:
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import one.yarub.app.ApiConfig
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.net.HttpURLConnection
+import java.net.URL
 
-  push:
-    paths:
-      - "yarub-one.zip"
-      - ".github/workflows/build-apk.yml"
+class YarubApi(private val session: SessionStore) {
 
-jobs:
-  build-debug-apk:
-    runs-on: ubuntu-latest
+    data class Result<T>(
+        val value: T?,
+        val errorCode: String?,
+        val message: String?
+    ) {
+        val isSuccess: Boolean
+            get() = value != null
+    }
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    suspend fun login(
+        email: String,
+        password: String
+    ): Result<Unit> {
+        return postJson(
+            "/api/auth/login",
+            JSONObject()
+                .put("email", email)
+                .put("password", password)
+        ).map { Unit }
+    }
 
-      - name: Extract YARUB ONE project
-        run: |
-          rm -rf source
-          mkdir -p source
-          unzip -q yarub-one.zip -d source
+    suspend fun register(
+        email: String,
+        password: String,
+        locale: String
+    ): Result<Unit> {
+        return postJson(
+            "/api/auth/register",
+            JSONObject()
+                .put("email", email)
+                .put("password", password)
+                .put("locale", locale)
+        ).map { Unit }
+    }
 
-          test -f source/yarub-one/android/settings.gradle.kts
-          test -f source/yarub-one/android/app/build.gradle.kts
+    suspend fun logout(): Result<Unit> {
+        val result = postJson(
+            "/api/auth/logout",
+            JSONObject()
+        ).map { Unit }
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+        session.clear()
+        return result
+    }
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+    suspend fun projects(): Result<List<Project>> {
+        return getJson("/api/projects").map { body ->
 
-      - name: Install Android SDK packages
-        run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          yes | sdkmanager --licenses >/dev/null || true
+            val array =
+                body.optJSONArray("projects")
+                    ?: JSONArray()
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
+            (0 until array.length()).map { index ->
 
-      - name: Build debug APK
-        working-directory: source/yarub-one/android
-        run: |
-          gradle --no-daemon assembleDebug \
-            -PYARUB_API_BASE_URL_DEBUG="${{ vars.YARUB_API_BASE_URL_DEBUG }}"
+                val row =
+                    array.getJSONObject(index)
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: yarub-one-debug-apk
-          path: source/yarub-one/android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+                Project(
+                    id = row.getString("id"),
+                    title = row.getString("title"),
+                    domain = row.optString("domain"),
+                    language = row.optString(
+                        "language",
+                        "ar"
+                    )
+                )
+            }
+        }
+    }
+
+    suspend fun entitlements(): Result<Entitlements> {
+        return getJson("/api/entitlements").map { body ->
+
+            val allowance =
+                body.optJSONArray("allowance")
+                    ?: JSONArray()
+
+            Entitlements(
+                planCode =
+                    body.optString(
+                        "planCode",
+                        "free"
+                    ),
+
+                allowance =
+                    (0 until allowance.length()).map { index ->
+
+                        val row =
+                            allowance.getJSONObject(index)
+
+                        Allowance(
+                            action =
+                                row.getString("action"),
+
+                            used =
+                                row.getInt("used"),
+
+                            limit =
+                                row.getInt("limit"),
+
+                            remaining =
+                                row.getInt("remaining")
+                        )
+                    }
+            )
+        }
+    }
+
+    suspend fun capabilities(): Result<Map<String, String>> {
+        return getJson("/api/capabilities").map { body ->
+
+            val array =
+                body.optJSONArray("capabilities")
+                    ?: JSONArray()
+
+            (0 until array.length()).associate {
